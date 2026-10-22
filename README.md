@@ -41,7 +41,9 @@ Tested with Dagster 1.13.26 on Python 3.13, in process and against a running `da
 | Every combination present | Summary built by the automation sensor and its check passed |
 | No sweep run left | Resource release command ran once per idle stretch, one timestamped entry each |
 
-A separate agent session that loaded the skill as a project skill and followed it on a 3 × 3 sweep, with the Dagster UI open, reached the same results; its findings are what version 0.1.1 fixed.
+Two separate agent sessions loaded the skill as a project skill and followed it on a 3 × 3 sweep with the Dagster UI open. The first reached the same results, and its findings are what 0.0.2 fixed. The second, on 0.0.3, set the sweep up from the Setup section alone and confirmed the fixes: with four injected faults, 6 runs succeeded (one after a single retry) and 3 failed with no retry, the capped run included, each failure leaving a record that names its logs; rerunning only those 3 completed all 9, and resources were released once per idle stretch. It also added a feature the template lacks, a run status sensor logging each success, written from the official reference.
+
+Versions stay at 0.0.x while the skill is young.
 
 ```sh
 uv run --with dagster python tests/test_template.py

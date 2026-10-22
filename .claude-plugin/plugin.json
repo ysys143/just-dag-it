@@ -1,0 +1,10 @@
+{
+  "name": "just-dag-it",
+  "version": "0.1.0",
+  "description": "Move repeated, deterministic agent work into a DAG (Dagster): the engine runs, retries and reports, and an agent is called only to design, add, analyze, or handle a failure no rule covers.",
+  "author": { "name": "ysys143", "url": "https://github.com/ysys143" },
+  "homepage": "https://github.com/ysys143/just-dag-it",
+  "repository": "https://github.com/ysys143/just-dag-it",
+  "license": "MIT",
+  "keywords": ["dag", "dagster", "orchestration", "experiments", "agents"]
+}

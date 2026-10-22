@@ -1,0 +1,6 @@
+{
+  "name": "just-dag-it",
+  "description": "just-dag-it: move repeated agent work into a DAG and call the agent only on exceptions.",
+  "owner": { "name": "ysys143" },
+  "plugins": [{ "name": "just-dag-it", "source": "./" }]
+}

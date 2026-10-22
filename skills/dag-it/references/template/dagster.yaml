@@ -1,0 +1,17 @@
+# Goes in DAGSTER_HOME. Without DAGSTER_HOME, `dagster dev` keeps its records in
+# a temporary folder and loses them when it stops, and with them which
+# combinations already finished.
+
+run_monitoring:
+  enabled: true
+  # A cap for every run; a run's dagster/max_runtime tag overrides it.
+  max_runtime_seconds: 21600
+  poll_interval_seconds: 60
+
+concurrency:
+  runs:
+    # How many runs may execute at once. One GPU or one license usually means 1.
+    max_concurrent_runs: 1
+
+telemetry:
+  enabled: false

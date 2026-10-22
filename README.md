@@ -32,10 +32,13 @@ Tested with Dagster 1.13.26 on Python 3.13, in process and against a running `da
 | --- | --- |
 | A transient error (`Connection reset`) | Retried once by rule, then succeeded; no agent called |
 | Any other error | Not retried; escalation record written and the agent command started with its path |
-| A run past its 20-second cap | Stopped by run monitoring; escalation record written |
+| An exception in the asset itself (no result file) | Not retried |
+| A run past its 20-second cap | Stopped by run monitoring, no retry logged; its partial logs kept and named in the escalation record |
 | Only the failed combinations rerun | Succeeded |
 | Every combination present | Summary built by the automation sensor and its check passed |
-| No sweep run left | Resource release command ran once |
+| No sweep run left | Resource release command ran once per idle stretch, one timestamped entry each |
+
+A separate agent session that loaded the skill as a project skill and followed it on a 3 × 3 sweep, with the Dagster UI open, reached the same results; its findings are what version 0.1.1 fixed.
 
 ```sh
 uv run --with dagster python tests/test_template.py

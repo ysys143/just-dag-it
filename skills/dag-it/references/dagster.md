@@ -7,16 +7,34 @@ Tested with Dagster 1.13.26 on Python 3.13 (macOS). Check `dagster --version` an
 ```sh
 uv init --python 3.13 sweep && cd sweep        # or an existing project
 uv add dagster dagster-webserver
-cp <this skill>/references/template/{definitions.py,dagster.yaml} .
-mkdir -p .dagster && mv dagster.yaml .dagster/
+cp <this skill>/references/template/{definitions.py,fake_experiment.py} .   # fake_experiment.py until RUN_COMMAND points at the real command
+mkdir -p .dagster && cp <this skill>/references/template/dagster.yaml .dagster/
+cat > env.sh <<'EOF'
 export DAGSTER_HOME=$PWD/.dagster              # persistent run records
+EOF
+source env.sh
 uv run dagster definitions validate -f definitions.py
 uv run dagster dev -f definitions.py           # UI on http://127.0.0.1:3000, daemon included
 ```
 
 `DAGSTER_HOME` must point at a folder that keeps `dagster.yaml`. When it is unset, `dagster dev` keeps its records in a temporary folder and loses them, and with them which combinations finished, when it stops.
 
-Pin a Python the release supports; 3.12 and 3.13 are safe choices.
+Keep every variable in `env.sh` and source it before `dagster dev` and before every CLI command. A run's tags, `dagster/max_runtime` among them, are set by the process that creates the run, so a backfill started from a shell without them gets the defaults.
+
+Pin a Python the release supports; 3.12 and 3.13 are safe choices. In 1.13 `dagster definitions validate` warns that it will be replaced by `dg check defs` (from the separate `dagster-dg-cli` package); it still works.
+
+### Variables the template reads
+
+| Variable | Default | Used for |
+| --- | --- | --- |
+| `DAGSTER_HOME` | none (temporary) | Dagster's run records and `dagster.yaml` |
+| `SWEEP_RESULTS` | `./results` | One folder per combination, `summary.json`, `release.log` |
+| `SWEEP_ESCALATIONS` | `./escalations` | Escalation records and agent logs |
+| `SWEEP_RETRY_DELAY` | 30 | Seconds before the first retry of a transient error; doubles each time |
+| `SWEEP_MAX_RUNTIME` | 7200 | Runtime cap of each sweep run, in seconds |
+| `SWEEP_IDLE_CHECK_SECONDS` | 600 | How often `release_when_idle` checks for active runs |
+| `ESCALATE_COMMAND` | unset (record only) | Command started on a failure; `{record}` becomes the record's path |
+| `TEARDOWN_COMMAND` | unset (no release) | Command that releases paid resources when no run is active |
 
 ## From need to Dagster
 
@@ -24,7 +42,8 @@ Pin a Python the release supports; 3.12 and 3.13 are safe choices.
 | --- | --- | --- |
 | One unit of work per combination | `MultiPartitionsDefinition` on an `@asset` | `SWEEP`, `sweep_result` |
 | Wrap an existing command | `subprocess.run` inside the asset; return `MaterializeResult(metadata=...)` | `RUN_COMMAND` |
-| Retry only known transient errors | `RetryPolicy` on the asset; `Failure(allow_retries=False)` for everything else | `TRANSIENT`, `RETRY` |
+| Retry only known transient errors | `RetryRequested(max_retries, seconds_to_wait)` raised when stderr matches the list; `Failure` otherwise; no `RetryPolicy` | `TRANSIENT`, `MAX_TRANSIENT_RETRIES` |
+| Keep logs of a run that is stopped | The command's stdout and stderr opened as files, not captured in memory | `sweep_result` |
 | Cap runtime | run tag `dagster/max_runtime` (seconds) with `run_monitoring.enabled` | `MAX_RUNTIME_SECONDS`, `dagster.yaml` |
 | Limit parallel runs | `concurrency.runs.max_concurrent_runs` | `dagster.yaml` |
 | Build the summary once everything exists | `AutomationCondition.eager()` plus an `AutomationConditionSensorDefinition` that is running | `sweep_summary`, `sweep_automation` |
@@ -44,9 +63,11 @@ uv run dagster job backfill -f definitions.py -j sweep_job --partitions "100|100
 
 A multi-partition key joins the dimension values in dimension-name order with `|`: `k=10, size=1000` is `10|1000`. List them with `SWEEP.get_partition_keys()`. The UI's backfill dialog can also select only failed and missing partitions.
 
+A backfill started from the CLI submits its runs and is marked completed at once; follow the work in the Runs list and in the asset's partition grid, not on the Backfills page.
+
 ## Calling an agent
 
-The failure sensor always writes `escalations/<run_id>.json`: the partition, the run's failure message, each failed step's error, description and stderr tail, and the results folder. With `ESCALATE_COMMAND` set it also starts that command detached, `{record}` replaced by the record's path, its output in `escalations/<run_id>.agent.log`.
+The failure sensor always writes `escalations/<run_id>.json`: the partition, the run's failure message, each failed step's error, description and stderr tail, the combination's folder, its log files and the tail of its stderr. With `ESCALATE_COMMAND` set it also starts that command detached, `{record}` replaced by the record's path, its output in `escalations/<run_id>.agent.log`.
 
 ```sh
 # Claude Code, headless, allowed to read and to edit the project's state files.
@@ -109,7 +130,10 @@ A laptop that sleeps pauses the daemon. A schedule missed while it was down is c
 - **Dagster's default automation sensor starts stopped.** `AutomationCondition` does nothing until a running automation sensor evaluates it; define one with `default_status=RUNNING` (`sweep_automation`) or turn it on in the UI.
 - **Schedules start stopped** (`DefaultScheduleStatus.STOPPED`). Turn one on only once the person agreed to what it costs.
 - **Sensors run on a tick**, every 30 seconds by default. An escalation follows a failure by up to that long.
-- **A run stopped for exceeding its cap has no step failure**, only the run's message ("Exceeded maximum runtime of N seconds."); the record still names the partition.
+- **A `RetryPolicy` on the asset retries every exception**, not only the transient errors: a bug in the asset that fails to read its result was attempted three times. When a run is stopped by its cap, the policy also logs a retry request (`STEP_UP_FOR_RETRY`) that never runs. Raising `RetryRequested` only for listed errors avoids both.
+- **A run stopped for exceeding its cap has no step failure**, only the run's message ("Exceeded maximum runtime of N seconds."). The record still names the partition, its folder and its logs.
+- **Output captured in memory is lost when a run is stopped.** `capture_output=True` writes nothing if the run is interrupted; open the log files before starting the command.
+- **`release_when_idle` releases once per idle stretch**: after every batch of runs ends, failures left or not, and again only after a new run. Its ticks show as Skipped in the UI with the release in the reason; `release.log` gets one timestamped entry per release.
 - **Commands started from a sensor run inside Dagster's gRPC server.** A child forked there writes gRPC fork warnings to its stderr; start it through a shell that opens its log after the fork, as `_spawn` does, or the log fills with them.
 - **A downstream step does not run after a failure.** Cleanup that must always happen belongs in a sensor.
 - **Without `DAGSTER_HOME`** every record is temporary, see Setup.

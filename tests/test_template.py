@@ -64,6 +64,20 @@ def main() -> None:
         assert record["steps"][0]["step"] == "sweep_result", record
         assert "out of memory" in record["steps"][0]["metadata"]["stderr_tail"], record
         assert record["steps"][0]["description"].startswith("exit 1:"), record
+        # The record points at the combination's folder and its logs, written while it ran.
+        assert record["out"] == str(work / "results" / "k=100__size=10000"), record
+        assert [Path(p).name for p in record["logs"]] == ["stdout.log", "stderr.log"], record
+        assert "out of memory" in record["stderr_tail"], record
+        assert "start size=10000 k=100" in (work / "results" / "k=100__size=10000" / "stdout.log").read_text()
+
+        # An exception in the asset itself (no result.json) is not retried either.
+        (work / "noresult-1000-100").write_text("")
+        broken = dg.materialize(
+            [t.sweep_result], partition_key=dg.MultiPartitionKey({"size": "1000", "k": "100"}), instance=instance, raise_on_error=False
+        )
+        assert not broken.success
+        assert [e for e in broken.all_events if e.event_type_value == "STEP_UP_FOR_RETRY"] == [], "an unexpected exception must not be retried"
+        (work / "noresult-1000-100").unlink()
 
         # The cause is fixed; every combination runs; the summary check passes.
         (work / "fail-10000-100").unlink()
@@ -74,7 +88,10 @@ def main() -> None:
         assert [c.passed for c in checks] == [True], checks
         assert len(json.loads((work / "results" / "summary.json").read_text())) == 4
 
-        print("template: transient error retried once, other failure escalated without retry, 4 combinations, summary check passed")
+        print(
+            "template: transient error retried once; other failure and an unexpected exception not retried; "
+            "escalation record with folder and logs; 4 combinations; summary check passed"
+        )
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

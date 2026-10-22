@@ -3,7 +3,7 @@
 Copy this folder into the project and replace the parts marked REPLACE: the
 command one combination runs, the parameter space, the stderr fragments that
 mean a harmless transient error, and the summary check. Everything else is
-the machinery: retries by rule, a runtime cap, a summary once every
+the machinery: retries of listed errors only, a runtime cap, a summary once every
 combination exists, an escalation record (and, if configured, an agent) when
 a run fails, and an optional release of paid resources once the sweep is idle.
 
@@ -39,33 +39,49 @@ SWEEP = dg.MultiPartitionsDefinition(
     }
 )
 
-# REPLACE: stderr fragments of failures with a known, harmless cause. These
-# are retried by rule; any other failure stops at once and is escalated.
+# REPLACE: stderr fragments of failures with a known, harmless cause. Only
+# these are retried. Every other failure, an exception raised in this file
+# included, stops at once and is escalated. (A RetryPolicy on the asset would
+# retry any exception, and would log a retry when a run is stopped by its cap.)
 TRANSIENT = ("Connection reset", "Connection timed out", "Temporary failure in name resolution")
-
-RETRY = dg.RetryPolicy(max_retries=2, delay=int(os.environ.get("SWEEP_RETRY_DELAY", "30")), backoff=dg.Backoff.EXPONENTIAL)
+MAX_TRANSIENT_RETRIES = 2
+# Doubles on each retry.
+RETRY_DELAY_SECONDS = int(os.environ.get("SWEEP_RETRY_DELAY", "30"))
 
 # Every sweep run is stopped after this long; enforced by run monitoring
-# (run_monitoring.enabled in dagster.yaml).
+# (run_monitoring.enabled in dagster.yaml). The tag is set by the process that
+# creates the run, so the CLI that starts a backfill needs this variable too.
 MAX_RUNTIME_SECONDS = int(os.environ.get("SWEEP_MAX_RUNTIME", str(2 * 60 * 60)))
 
 
-@dg.asset(partitions_def=SWEEP, retry_policy=RETRY)
+def out_dir(key: str) -> Path:
+    """Where one combination writes its result and logs; `key` as in the dagster/partition tag."""
+    params = SWEEP.get_partition_key_from_str(key).keys_by_dimension
+    return RESULTS / "__".join(f"{name}={value}" for name, value in sorted(params.items()))
+
+
+def _tail(path: Path, chars: int = 2000) -> str:
+    return path.read_text(errors="replace")[-chars:] if path.exists() else ""
+
+
+@dg.asset(partitions_def=SWEEP)
 def sweep_result(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
     key = context.partition_key
     # A multi-partitioned asset gets a MultiPartitionKey, such as "10|1000" for k=10, size=1000.
     params: dict[str, str] = key.keys_by_dimension if isinstance(key, dg.MultiPartitionKey) else {}
-    out = RESULTS / "__".join(f"{name}={value}" for name, value in sorted(params.items()))
+    out = out_dir(key)
     out.mkdir(parents=True, exist_ok=True)
     command = [part.format(out=out, **params) for part in RUN_COMMAND]
-    proc = subprocess.run(command, capture_output=True, text=True)
-    (out / "stdout.log").write_text(proc.stdout)
-    (out / "stderr.log").write_text(proc.stderr)
-    if proc.returncode != 0:
+    # Written while it runs, so a run stopped by its cap still leaves its logs.
+    with open(out / "stdout.log", "w") as stdout, open(out / "stderr.log", "w") as stderr:
+        returncode = subprocess.run(command, stdout=stdout, stderr=stderr, env={**os.environ, "PYTHONUNBUFFERED": "1"}).returncode
+    if returncode != 0:
+        stderr_tail = _tail(out / "stderr.log")
+        if any(fragment in stderr_tail for fragment in TRANSIENT) and context.retry_number < MAX_TRANSIENT_RETRIES:
+            raise dg.RetryRequested(max_retries=MAX_TRANSIENT_RETRIES, seconds_to_wait=RETRY_DELAY_SECONDS * 2**context.retry_number)
         raise dg.Failure(
-            description=f"exit {proc.returncode}: {shlex.join(command)}",
-            metadata={"stderr_tail": dg.MetadataValue.text(proc.stderr[-2000:]), "out": dg.MetadataValue.path(str(out))},
-            allow_retries=any(fragment in proc.stderr for fragment in TRANSIENT),
+            description=f"exit {returncode}: {shlex.join(command)}",
+            metadata={"stderr_tail": dg.MetadataValue.text(stderr_tail), "out": dg.MetadataValue.path(str(out))},
         )
 
     result = json.loads((out / "result.json").read_text())
@@ -99,16 +115,17 @@ sweep_automation = dg.AutomationConditionSensorDefinition(
 )
 
 
-def _spawn(argv: list[str], log: Path) -> None:
-    """Start a command detached, its output in `log`.
+def _spawn(argv: list[str], log: Path, append: bool = False) -> None:
+    """Start a command detached, its output in `log`; with `append`, after a UTC timestamp.
 
     Sensors run inside Dagster's gRPC server; a child forked there writes
     gRPC's fork warnings to its stderr before exec. The shell opens the log
     only after that, so the log holds the command's own output.
     """
     log.parent.mkdir(parents=True, exist_ok=True)
+    script = 'date -u +%Y-%m-%dT%H:%M:%SZ >>"$0"; exec "$@" >>"$0" 2>&1' if append else 'exec "$@" >"$0" 2>&1'
     subprocess.Popen(
-        ["/bin/sh", "-c", 'exec "$@" >"$0" 2>&1', str(log), *argv],
+        ["/bin/sh", "-c", script, str(log), *argv],
         cwd=ROOT,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -154,14 +171,19 @@ def _step_failures(context: dg.RunFailureSensorContext) -> list[dict]:
 @dg.run_failure_sensor(monitored_jobs=[sweep_job], default_status=dg.DefaultSensorStatus.RUNNING)
 def escalate_failure(context: dg.RunFailureSensorContext) -> None:
     run = context.dagster_run
+    partition = run.tags.get("dagster/partition")
+    out = out_dir(partition) if partition else None
     record = {
         "run_id": run.run_id,
         "job": run.job_name,
-        "partition": run.tags.get("dagster/partition"),
+        "partition": partition,
         "failed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        # A run stopped by its cap has no step failure; this message says why.
         "message": context.failure_event.message,
         "steps": _step_failures(context),
-        "results": str(RESULTS),
+        "out": str(out) if out else None,
+        "logs": [str(path) for path in (out / "stdout.log", out / "stderr.log") if path.exists()] if out else [],
+        "stderr_tail": _tail(out / "stderr.log") if out else "",
     }
     ESCALATIONS.mkdir(parents=True, exist_ok=True)
     path = ESCALATIONS / f"{run.run_id}.json"
@@ -183,7 +205,10 @@ ACTIVE = [
 
 
 # Optional: release paid resources (a GPU machine) once no sweep run is left.
-# A downstream asset would not run after a failure; this does.
+# A downstream asset would not run after a failure; this does. It releases once
+# per idle stretch: after every batch of runs ends, failures left or not, and
+# not again until a new run starts. Its tick shows as Skipped in the UI, with
+# the release in the reason; release.log keeps one timestamped entry per release.
 @dg.sensor(minimum_interval_seconds=int(os.environ.get("SWEEP_IDLE_CHECK_SECONDS", "600")), default_status=dg.DefaultSensorStatus.RUNNING)
 def release_when_idle(context: dg.SensorEvaluationContext):
     command = os.environ.get("TEARDOWN_COMMAND")
@@ -195,7 +220,7 @@ def release_when_idle(context: dg.SensorEvaluationContext):
     if not last or last[0].dagster_run.run_id == context.cursor:
         return dg.SkipReason("no sweep run since the last release")
 
-    _spawn(shlex.split(command), RESULTS / "release.log")
+    _spawn(shlex.split(command), RESULTS / "release.log", append=True)
     context.update_cursor(last[0].dagster_run.run_id)
     return dg.SkipReason(f"released resources after run {last[0].dagster_run.run_id}")
 

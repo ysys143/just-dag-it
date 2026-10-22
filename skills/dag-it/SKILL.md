@@ -57,19 +57,23 @@ Copy `references/template/` (`definitions.py`, `dagster.yaml`) into the project 
 Keep these properties:
 
 - One partition per combination, so finished combinations are never rerun by accident.
-- Retries only for errors listed as transient; every other failure stops at once (`Failure(allow_retries=False)`).
+- Retries only for errors listed as transient: raise `RetryRequested` when stderr matches the list, and put no `RetryPolicy` on the asset, which would retry every exception, bugs in the asset included.
+- Command output written to files while it runs, so a run stopped by its cap still leaves its logs.
 - A runtime cap on every run, and run concurrency matching the resource (one GPU, one run).
-- The failure sensor writes an escalation record; starting an agent from it is opt-in.
-- Cleanup of paid resources in a sensor, never as a downstream step: a downstream step does not run after a failure.
+- The failure sensor writes an escalation record naming the combination's folder and logs; starting an agent from it is opt-in.
+- Cleanup of paid resources in a sensor, never as a downstream step: a downstream step does not run after a failure. It releases once per idle stretch, failures left or not.
 - `DAGSTER_HOME` set to a persistent folder; without it every record of what finished is lost when the process stops.
+- The same environment variables for `dagster dev` and every CLI command: a run's tags, its runtime cap among them, come from the process that creates it.
 
 ## 4. Verify before handing over
 
 1. `dagster definitions validate -f definitions.py`
 2. One combination succeeds end to end.
 3. A forced transient error is retried and succeeds; a forced real error is not retried and writes an escalation record.
-4. A run past its cap is stopped.
+4. A run past its cap is stopped, with no retry, and its record points at its logs.
 5. After every combination exists, the summary and its checks run by themselves.
+
+Judge progress from the Runs list and the partition grid. A backfill started from the CLI is marked completed as soon as its runs are submitted.
 
 Report each with its evidence (run ids, the record path). Starting the full sweep, turning a schedule on, or starting the daemon as a service needs the person's agreement: they cost money or keep running.
 

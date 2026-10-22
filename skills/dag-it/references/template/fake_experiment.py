@@ -3,7 +3,8 @@
 It writes result.json into --out. Files next to it change its behavior, which
 the template's tests use: `fail-<size>-<k>` makes that combination fail with a
 non-transient error, `transient-<size>-<k>` makes its next run fail once with
-a transient one, and `sleep-<size>-<k>` makes it run for the number of seconds
+a transient one, `noresult-<size>-<k>` makes it exit 0 without writing
+result.json, and `sleep-<size>-<k>` makes it run for the number of seconds
 the file holds.
 """
 
@@ -24,9 +25,12 @@ def main() -> int:
     args = parser.parse_args()
     combo = f"{args.size}-{args.k}"
 
+    print(f"start size={args.size} k={args.k}")
     sleep_file = HERE / f"sleep-{combo}"
     if sleep_file.exists():
         time.sleep(float(sleep_file.read_text().strip() or "0"))
+    if (HERE / f"noresult-{combo}").exists():
+        return 0
     transient = HERE / f"transient-{combo}"
     if transient.exists():
         transient.unlink()

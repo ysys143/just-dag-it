@@ -40,6 +40,16 @@ becoming a successful sweep. A completed partition needs its validated output
 and acknowledgement; all selected partitions and checks are required for the
 summary. Submitting a backfill does not establish either condition.
 
+Seed valid output files and acknowledgements without successful engine runs
+for the selected scope; the summary must still wait. A disabled or different
+execution scope must not adopt those results as its own completion. Keep the
+original command attempt separate from the successful orchestration run when
+a verified result is reused after recovery.
+
+Exercise final-result verification after independent cleanup has removed a
+disposable source worker or host. Retain the receiver's original request,
+acknowledgement and result bytes for that verification under the original cap.
+
 Verify the original cap and cleanup reserve still take precedence, including
 after failure or export trouble. Resource release belongs in the independent
 controller or sensor, not a downstream success step. Exercise idle cleanup

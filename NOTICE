@@ -1,0 +1,12 @@
+just-dag-it
+Copyright 2026 ysys143. Licensed under the MIT License (LICENSE).
+
+This repository includes third-party material:
+
+skills/dag-it/references/dagster-expert/
+  The dagster-expert skill from https://github.com/dagster-io/skills
+  (plugins/dagster/skills/dagster-expert/, commit ed0248b1b6b70710a8785e3ff4880b44496c0f94).
+  Copyright 2025 Dagster Labs, Inc.
+  Licensed under the Apache License, Version 2.0; the full text is in that
+  folder's LICENSE. Modified: SKILL.md renamed to INDEX.md; LICENSE and
+  UPSTREAM.md added. See that folder's UPSTREAM.md.

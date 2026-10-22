@@ -54,6 +54,8 @@ Confirm the parameter space and the acceptance checks with the person (AskUserQu
 
 Copy `references/template/` (`definitions.py`, `dagster.yaml`) into the project and replace its parts marked REPLACE. Wrap the existing command; do not rewrite its logic inside the DAG. `references/dagster.md` has the setup, the mapping from each need to Dagster, and the traps that were hit when this template was tested.
 
+For anything in Dagster beyond the template (other partition types, automation conditions, sensors, schedules, integrations such as SSH or Docker, the `dg` CLI, components), read `references/dagster-expert/INDEX.md` and the reference it points to before writing code; do not write Dagster APIs from memory. It is the official Dagster skill, copied in (see its `UPSTREAM.md`). Where it and `references/dagster.md` differ, `dagster.md` records what this template was tested with.
+
 Keep these properties:
 
 - One partition per combination, so finished combinations are never rerun by accident.

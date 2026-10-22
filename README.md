@@ -26,6 +26,8 @@ The skill is plain Markdown with a Python template, so other agents can use it t
 
 `skills/dag-it/references/template/` holds `definitions.py`, `dagster.yaml` and `fake_experiment.py`, a stand-in experiment so the template runs as is. `skills/dag-it/references/dagster.md` covers setup, the mapping from each need to Dagster, how to call Claude Code, Codex or another session on failure, running the daemon as a service, and the traps found while testing.
 
+`skills/dag-it/references/dagster-expert/` is the official Dagster skill from [dagster-io/skills](https://github.com/dagster-io/skills), copied whole so the agent reads Dagster's own reference instead of writing its APIs from memory: partitions, automation, sensors, schedules, integrations (SSH, Docker, Kubernetes and 40 more), and the `dg` CLI. Its `SKILL.md` is renamed `INDEX.md` so it never loads as a second `dagster-expert` skill next to the official plugin; `UPSTREAM.md` there records the commit it was copied from.
+
 Tested with Dagster 1.13.26 on Python 3.13, in process and against a running `dagster dev` with its daemon:
 
 | Scenario | Result |
@@ -54,4 +56,4 @@ The split between a deterministic DAG and an agent called only for design, addit
 
 ## License
 
-MIT
+MIT, except `skills/dag-it/references/dagster-expert/`, which is Apache-2.0 (Copyright 2025 Dagster Labs, Inc.); see `NOTICE`.

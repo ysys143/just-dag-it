@@ -38,19 +38,25 @@ Pin a Python the release supports; 3.12 and 3.13 are safe choices. In 1.13 `dags
 
 ## From need to Dagster
 
-| Need | Dagster | In the template |
-| --- | --- | --- |
-| One unit of work per combination | `MultiPartitionsDefinition` on an `@asset` | `SWEEP`, `sweep_result` |
-| Wrap an existing command | `subprocess.run` inside the asset; return `MaterializeResult(metadata=...)` | `RUN_COMMAND` |
-| Retry only known transient errors | `RetryRequested(max_retries, seconds_to_wait)` raised when stderr matches the list; `Failure` otherwise; no `RetryPolicy` | `TRANSIENT`, `MAX_TRANSIENT_RETRIES` |
-| Keep logs of a run that is stopped | The command's stdout and stderr opened as files, not captured in memory | `sweep_result` |
-| Cap runtime | run tag `dagster/max_runtime` (seconds) with `run_monitoring.enabled` | `MAX_RUNTIME_SECONDS`, `dagster.yaml` |
-| Limit parallel runs | `concurrency.runs.max_concurrent_runs` | `dagster.yaml` |
-| Build the summary once everything exists | `AutomationCondition.eager()` plus an `AutomationConditionSensorDefinition` that is running | `sweep_summary`, `sweep_automation` |
-| Judge the outcome | `@asset_check` returning `AssetCheckResult` | `every_combination_present` |
-| Call an agent on failure | `@run_failure_sensor` | `escalate_failure` |
-| Release paid resources when idle | `@sensor` that checks for active runs | `release_when_idle` |
-| Recur on a schedule | `@schedule(cron_schedule=..., execution_timezone=...)` yielding a `RunRequest` per partition | `nightly_sweep` |
+The last column points into `dagster-expert/`, the official Dagster skill copied next to this file; read it for anything the template does not show.
+
+| Need | Dagster | In the template | Official reference |
+| --- | --- | --- | --- |
+| One unit of work per combination | `MultiPartitionsDefinition` on an `@asset` | `SWEEP`, `sweep_result` | `references/assets/INDEX.md` |
+| Wrap an existing command | `subprocess.run` inside the asset; return `MaterializeResult(metadata=...)` | `RUN_COMMAND` | `references/integrations/dagster-ssh/INDEX.md` for a command on a remote machine |
+| Retry only known transient errors | `RetryRequested(max_retries, seconds_to_wait)` raised when stderr matches the list; `Failure` otherwise; no `RetryPolicy` | `TRANSIENT`, `MAX_TRANSIENT_RETRIES` | not covered |
+| Keep logs of a run that is stopped | The command's stdout and stderr opened as files, not captured in memory | `sweep_result` | not covered |
+| Cap runtime | run tag `dagster/max_runtime` (seconds) with `run_monitoring.enabled` | `MAX_RUNTIME_SECONDS`, `dagster.yaml` | not covered |
+| Limit parallel runs | `concurrency.runs.max_concurrent_runs` | `dagster.yaml` | not covered |
+| Build the summary once everything exists | `AutomationCondition.eager()` plus an `AutomationConditionSensorDefinition` that is running | `sweep_summary`, `sweep_automation` | `references/automation/declarative-automation/INDEX.md` |
+| Judge the outcome | `@asset_check` returning `AssetCheckResult` | `every_combination_present` | `references/assets/INDEX.md` |
+| Call an agent on failure | `@run_failure_sensor` | `escalate_failure` | `references/automation/sensors/run-status-sensors.md` |
+| Release paid resources when idle | `@sensor` that checks for active runs | `release_when_idle` | `references/automation/sensors/basic-sensors.md` |
+| Recur on a schedule | `@schedule(cron_schedule=..., execution_timezone=...)` yielding a `RunRequest` per partition | `nightly_sweep` | `references/automation/schedules.md`, `references/automation/choosing-automation.md` |
+
+## The official skill and the `dg` CLI
+
+`dagster-expert/` is written for projects created with `create-dagster` and driven by the `dg` CLI (`dg dev`, `dg launch`, `dg check defs`; package `dagster-dg-cli`), and for Dagster Plus. This template is a single `definitions.py` run with the `dagster` CLI, which is what was tested here. Both are the same Dagster: in a `create-dagster` project, put the template's definitions under the project's definitions folder and use the `dg` commands from `references/cli/` (this combination was not tested here). The parts of `dagster-expert/` about Dagster Plus (`references/cli/api/`, `references/cli/plus/`, `references/deployment/`) do not apply to a local instance.
 
 ## Running
 
@@ -127,7 +133,7 @@ A laptop that sleeps pauses the daemon. A schedule missed while it was down is c
 
 ## Traps found while testing the template
 
-- **Dagster's default automation sensor starts stopped.** `AutomationCondition` does nothing until a running automation sensor evaluates it; define one with `default_status=RUNNING` (`sweep_automation`) or turn it on in the UI.
+- **Dagster's default automation sensor starts stopped.** `AutomationCondition` does nothing until a running automation sensor evaluates it; define one with `default_status=RUNNING` (`sweep_automation`) or turn it on in the UI. The official reference says the same (`dagster-expert/references/automation/declarative-automation/INDEX.md`).
 - **Schedules start stopped** (`DefaultScheduleStatus.STOPPED`). Turn one on only once the person agreed to what it costs.
 - **Sensors run on a tick**, every 30 seconds by default. An escalation follows a failure by up to that long.
 - **A `RetryPolicy` on the asset retries every exception**, not only the transient errors: a bug in the asset that fails to read its result was attempted three times. When a run is stopped by its cap, the policy also logs a retry request (`STEP_UP_FOR_RETRY`) that never runs. Raising `RetryRequested` only for listed errors avoids both.

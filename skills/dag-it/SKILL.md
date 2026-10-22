@@ -75,6 +75,16 @@ Keep these properties:
 4. A run past its cap is stopped, with no retry, and its record points at its logs.
 5. After every combination exists, the summary and its checks run by themselves.
 
+Exercise these through the actual command consumer, not only a replacement
+function: entry tests use their own repetition policy; an explicitly declared
+resume preserves completed work, original acknowledgements and failed or
+not-started history; and the independent cleanup consumer distinguishes selected
+completion from stopped, failed, running and unexported work. A not-started
+marker is not a completed result. Inject a representative failure at each
+boundary before handing over. [Consumer-boundary checks](references/consumer-boundaries.md)
+describe the evidence to keep; project-specific failures and run identities
+belong in the project's fixtures, not in this skill.
+
 Judge progress from the Runs list and the partition grid. A backfill started from the CLI is marked completed as soon as its runs are submitted.
 
 Report each with its evidence (run ids, the record path). Starting the full sweep, turning a schedule on, or starting the daemon as a service needs the person's agreement: they cost money or keep running.

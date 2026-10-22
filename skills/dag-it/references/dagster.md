@@ -7,7 +7,7 @@ Tested with Dagster 1.13.26 on Python 3.13 (macOS). Check `dagster --version` an
 ```sh
 uv init --python 3.13 sweep && cd sweep        # or an existing project
 uv add dagster dagster-webserver
-cp <this skill>/references/template/{definitions.py,fake_experiment.py} .   # fake_experiment.py until RUN_COMMAND points at the real command
+cp <this skill>/references/template/{definitions.py,escalate.py,fake_experiment.py} .   # fake_experiment.py until RUN_COMMAND points at the real command
 mkdir -p .dagster && cp <this skill>/references/template/dagster.yaml .dagster/
 cat > env.sh <<'EOF'
 export DAGSTER_HOME=$PWD/.dagster              # persistent run records
@@ -29,11 +29,13 @@ Pin a Python the release supports; 3.12 and 3.13 are safe choices. In 1.13 `dags
 | --- | --- | --- |
 | `DAGSTER_HOME` | none (temporary) | Dagster's run records and `dagster.yaml` |
 | `SWEEP_RESULTS` | `./results` | One folder per combination, `summary.json`, `release.log` |
-| `SWEEP_ESCALATIONS` | `./escalations` | Escalation records and agent logs |
+| `SWEEP_ESCALATIONS` | `./escalations` | Escalation records, diagnoses, messages and their logs |
 | `SWEEP_RETRY_DELAY` | 30 | Seconds before the first retry of a transient error; doubles each time |
 | `SWEEP_MAX_RUNTIME` | 7200 | Runtime cap of each sweep run, in seconds |
 | `SWEEP_IDLE_CHECK_SECONDS` | 600 | How often `release_when_idle` checks for active runs |
-| `ESCALATE_COMMAND` | unset (record only) | Command started on a failure; `{record}` becomes the record's path |
+| `DIAGNOSE_COMMAND` | unset (no diagnosis) | One-shot read-only diagnosis of a failed run, see Calling an agent |
+| `DIAGNOSE_TIMEOUT` | 600 | Seconds before the diagnosis is cut off |
+| `REPORT_COMMAND` | unset (no report) | Hands the failure and its diagnosis to the sweep's owner, see Calling an agent |
 | `TEARDOWN_COMMAND` | unset (no release) | Command that releases paid resources when no run is active |
 
 ## From need to Dagster
@@ -50,7 +52,7 @@ The last column points into `dagster-expert/`, the official Dagster skill copied
 | Limit parallel runs | `concurrency.runs.max_concurrent_runs` | `dagster.yaml` | not covered |
 | Build the summary once everything exists | `AutomationCondition.eager()` plus an `AutomationConditionSensorDefinition` that is running | `sweep_summary`, `sweep_automation` | `references/automation/declarative-automation/INDEX.md` |
 | Judge the outcome | `@asset_check` returning `AssetCheckResult` | `every_combination_present` | `references/assets/INDEX.md` |
-| Call an agent on failure | `@run_failure_sensor` | `escalate_failure` | `references/automation/sensors/run-status-sensors.md` |
+| Call an agent on failure | `@run_failure_sensor` writing a record, then `escalate.py`: a one-shot diagnosis and a report to the owner | `escalate_failure`, `escalate.py` | `references/automation/sensors/run-status-sensors.md` |
 | Release paid resources when idle | `@sensor` that checks for active runs | `release_when_idle` | `references/automation/sensors/basic-sensors.md` |
 | Recur on a schedule | `@schedule(cron_schedule=..., execution_timezone=...)` yielding a `RunRequest` per partition | `nightly_sweep` | `references/automation/schedules.md`, `references/automation/choosing-automation.md` |
 
@@ -73,21 +75,55 @@ A backfill started from the CLI submits its runs and is marked completed at once
 
 ## Calling an agent
 
-The failure sensor always writes `escalations/<run_id>.json`: the partition, the run's failure message, each failed step's error, description and stderr tail, the combination's folder, its log files and the tail of its stderr. With `ESCALATE_COMMAND` set it also starts that command detached, `{record}` replaced by the record's path, its output in `escalations/<run_id>.agent.log`.
+The failure sensor always writes `escalations/<run_id>.json`: the partition, the run's failure message, each failed step's error, description and stderr tail, the combination's folder, its log files and the tail of its stderr. Nothing else happens until `DIAGNOSE_COMMAND` or `REPORT_COMMAND` is set; then the sensor starts `escalate.py` with the record, detached, its log in `escalations/<run_id>.escalate.log`:
+
+1. **A one-shot diagnosis.** `DIAGNOSE_COMMAND` runs once: a headless agent session with read-only tools. It reads the record and the logs, and its answer (cause, evidence, class, a fingerprint copied from the logs, next step) becomes `<run_id>.diagnosis.md`. It cannot run or change anything, and it times out after `DIAGNOSE_TIMEOUT` seconds.
+2. **A report to the owner.** `REPORT_COMMAND` hands `<run_id>.message.md` (what failed, the record, the diagnosis) to the sweep's owner: the agent session that set the sweep up, which knows why it exists. The owner decides, and reruns only that combination or asks the person. Only that combination waits; the others keep running.
+
+The outcome of both steps is added to the record under `escalation`. Placeholders in both commands: `{record}`, `{diagnosis}`, `{message}`, `{prompt}` (the fixed diagnosis prompt in `escalate.py`). `$VARS` are expanded.
+
+Not used: a plain LLM call without tools (it sees only what the prompt carries), and a headless session that may change files or rerun (nobody watches it, and several can start at once).
+
+### The diagnosis, without the person's global instructions
+
+The diagnosis follows the project's instructions (its CLAUDE.md or AGENTS.md) but not the person's own global ones, such as a reply language or tool preferences, which would change the fixed answer format. Both commands below use the logged-in subscription, not an API key.
+
+Claude Code:
 
 ```sh
-# Claude Code, headless, allowed to read and to edit the project's state files.
-# The prompt comes before --allowedTools, which takes every value after it.
-export ESCALATE_COMMAND='claude -p "A sweep run failed. Read {record} and the logs it points to. Find the cause. Do not start runs or change the sweep. Write the cause and a proposed fix to PHASE.md under Needs you, then stop." --allowedTools Read,Grep,Glob,Edit'
-
-# Codex, read-only sandbox
-export ESCALATE_COMMAND='codex exec -s read-only "A sweep run failed. Read {record} and the logs it points to; report the cause and a proposed fix."'
-
-# Another running session, over xsm
-export ESCALATE_COMMAND='xsm send <session> --text "sweep run failed: {record}"'
+export DIAGNOSE_COMMAND='claude -p {prompt} --model haiku --tools Read,Grep,Glob --setting-sources project,local --strict-mcp-config --disable-slash-commands --no-session-persistence'
 ```
 
-Start with the record alone. Let an agent act on its own only after its escalations have been right a few times, and keep its permissions to what the prompt asks for.
+- `--setting-sources project,local` leaves out every user-level setting: the person's CLAUDE.md, but also their hooks, permission rules and plugins. That is why `--tools` (the tools that exist), not `--allowedTools`, keeps the session to read-only tools. The project's CLAUDE.md still loads.
+- Not `--bare`: it authenticates only with `ANTHROPIC_API_KEY`.
+- Measured: the global instructions' rules were gone and a project-only codeword was still known; a real escalation was diagnosed in about 5 s, and from inside the daemon the message reached the owner about 30 s after the failure, sensor tick included.
+
+Codex:
+
+```sh
+CODEX_HOME=$HOME/.codex-headless codex login        # once, by the person: a home with no AGENTS.md
+export DIAGNOSE_COMMAND='env CODEX_HOME=$HOME/.codex-headless codex exec -m gpt-6-luna -s read-only --ephemeral --skip-git-repo-check -o {diagnosis} {prompt}'
+```
+
+- Codex reads the global instructions from `$CODEX_HOME/AGENTS.md` and has no switch for them (`--ignore-user-config` skips only `config.toml`). A home without that file leaves them out while the project's AGENTS.md still loads; checked with `codex debug prompt-input`, which prints what the model would see without calling it.
+- Log in to that home on its own. Do not copy or link another home's `auth.json`: a token refresh in one home could invalidate the other.
+- Skills in `~/.agents/skills` are still listed whatever the home; they are descriptions, not rules.
+- Not tested end to end in this form; the same `codex exec` flags were, in the default home.
+
+### The report to the owner session
+
+Over [xsm](https://github.com/ysys143/xsm) or any command that delivers a message:
+
+```sh
+export REPORT_COMMAND='xsm send <owner> --kind task --text-file {message} --wait 5'
+```
+
+- Name the owner where the project keeps its state (PHASE.md, under Agents). The owner closes the task with `xsm send --reply-to <id> --outcome succeeded|failed`; a delivery receipt says only that the message arrived, not that anyone acted.
+- xsm names the sender after the agent session the sending process descends from. A daemon started from an agent session, or from a tmux server that session started, sends as that session. When that session is the owner itself, skip `REPORT_COMMAND` and have it watch `escalations/` for `*.message.md` instead. A daemon started by launchd or systemd was not tested.
+- A send to a session in another project is refused (`out of scope`) until the person connects the two (`xsm link` or `xsm reach`).
+- With no owner, leave `REPORT_COMMAND` unset: the record, the diagnosis and the message wait in `escalations/` for the person, or use a notification command there instead.
+
+Start with records and diagnoses alone. Report to an owner once the diagnoses have been right a few times.
 
 ## Keeping it running
 

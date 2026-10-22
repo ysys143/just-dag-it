@@ -10,7 +10,7 @@ An agent that runs every step of a parameter sweep, a benchmark or a nightly reg
 
 1. **Decide.** Whether the work qualifies (repeated, deterministic, checkable by code) and which rung is enough: run it directly, a script that skips finished outputs, or a DAG.
 2. **Inventory.** The command, the parameter space, the acceptance checks, known transient errors, the resources held; confirmed with you before anything is built.
-3. **Build.** From a tested template: one partition per combination, retries only for listed transient errors, a runtime cap, a summary and its checks once everything exists, an escalation record (and optionally an agent) on failure, and release of paid resources when idle.
+3. **Build.** From a tested template: one partition per combination, retries only for listed transient errors, a runtime cap, a summary and its checks once everything exists, and release of paid resources when idle. A failure leaves a record; optionally a one-shot, read-only headless session diagnoses it, and the diagnosis is reported to the agent session that owns the sweep, which decides what to rerun.
 4. **Verify.** Each property is checked with evidence before the sweep is handed over.
 5. **Behave.** After the move the agent stops polling, never reruns what finished, and starts nothing you did not approve.
 
@@ -24,7 +24,7 @@ The skill is plain Markdown with a Python template, so other agents can use it t
 
 ## The template
 
-`skills/dag-it/references/template/` holds `definitions.py`, `dagster.yaml` and `fake_experiment.py`, a stand-in experiment so the template runs as is. `skills/dag-it/references/dagster.md` covers setup, the mapping from each need to Dagster, how to call Claude Code, Codex or another session on failure, running the daemon as a service, and the traps found while testing.
+`skills/dag-it/references/template/` holds `definitions.py`, `escalate.py` (diagnosis and report on failure), `dagster.yaml` and `fake_experiment.py`, a stand-in experiment so the template runs as is. `skills/dag-it/references/dagster.md` covers setup, the mapping from each need to Dagster, how to call Claude Code, Codex or another session on failure, running the daemon as a service, and the traps found while testing.
 
 `skills/dag-it/references/dagster-expert/` is the official Dagster skill from [dagster-io/skills](https://github.com/dagster-io/skills), copied whole so the agent reads Dagster's own reference instead of writing its APIs from memory: partitions, automation, sensors, schedules, integrations (SSH, Docker, Kubernetes and 40 more), and the `dg` CLI. Its `SKILL.md` is renamed `INDEX.md` so it never loads as a second `dagster-expert` skill next to the official plugin; `UPSTREAM.md` there records the commit it was copied from.
 
@@ -33,7 +33,8 @@ Tested with Dagster 1.13.26 on Python 3.13, in process and against a running `da
 | Scenario | Result |
 | --- | --- |
 | A transient error (`Connection reset`) | Retried once by rule, then succeeded; no agent called |
-| Any other error | Not retried; escalation record written and the agent command started with its path |
+| Any other error | Not retried; escalation record written |
+| The same failure, with diagnosis and report configured | A one-shot `claude -p` haiku session (read-only tools, the person's global instructions left out) named the cause and the fingerprint; the message reached the stand-in owner about 30 s after the failure |
 | An exception in the asset itself (no result file) | Not retried |
 | A run past its 20-second cap | Stopped by run monitoring, no retry logged; its partial logs kept and named in the escalation record |
 | Only the failed combinations rerun | Succeeded |

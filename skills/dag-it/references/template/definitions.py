@@ -3,9 +3,10 @@
 Copy this folder into the project and replace the parts marked REPLACE: the
 command one combination runs, the parameter space, the stderr fragments that
 mean a harmless transient error, and the summary check. Everything else is
-the machinery: retries of listed errors only, a runtime cap, a summary once every
-combination exists, an escalation record (and, if configured, an agent) when
-a run fails, and an optional release of paid resources once the sweep is idle.
+the machinery: retries of listed errors only, a runtime cap, a summary once
+every combination exists, an escalation record when a run fails (and, if
+configured, a one-shot diagnosis and a report to the sweep's owner, see
+escalate.py), and an optional release of paid resources once the sweep is idle.
 
 Run it with DAGSTER_HOME set to a folder that holds dagster.yaml:
     DAGSTER_HOME=$PWD/.dagster dagster dev -f definitions.py
@@ -189,11 +190,10 @@ def escalate_failure(context: dg.RunFailureSensorContext) -> None:
     path = ESCALATIONS / f"{run.run_id}.json"
     path.write_text(json.dumps(record, indent=2))
 
-    # Optional: start an agent on the record, detached so the sensor returns at
-    # once. "{record}" in the command becomes the record's path.
-    command = os.environ.get("ESCALATE_COMMAND")
-    if command:
-        _spawn([part.replace("{record}", str(path)) for part in shlex.split(command)], ESCALATIONS / f"{run.run_id}.agent.log")
+    # Optional: a one-shot read-only diagnosis, then a report to the sweep's
+    # owner (escalate.py), detached so the sensor returns at once.
+    if os.environ.get("DIAGNOSE_COMMAND") or os.environ.get("REPORT_COMMAND"):
+        _spawn([sys.executable, str(ROOT / "escalate.py"), str(path)], ESCALATIONS / f"{run.run_id}.escalate.log")
 
 
 ACTIVE = [

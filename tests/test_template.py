@@ -15,16 +15,54 @@ from pathlib import Path
 TEMPLATE = Path(__file__).resolve().parents[1] / "skills" / "dag-it" / "references" / "template"
 
 
-def load(work: Path):
+def load(work: Path, name: str = "definitions"):
     os.environ["SWEEP_RESULTS"] = str(work / "results")
     os.environ["SWEEP_ESCALATIONS"] = str(work / "escalations")
     os.environ["SWEEP_RETRY_DELAY"] = "0"
-    os.environ.pop("ESCALATE_COMMAND", None)
-    spec = importlib.util.spec_from_file_location("definitions", work / "definitions.py")
+    for key in ("DIAGNOSE_COMMAND", "REPORT_COMMAND", "DIAGNOSE_TIMEOUT"):
+        os.environ.pop(key, None)
+    spec = importlib.util.spec_from_file_location(name, work / f"{name}.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def check_escalate(work: Path, record_path: Path) -> None:
+    """escalate.py: diagnosis output, the message to the owner, and the outcome added to the record."""
+    escalate = load(work, "escalate")
+    # escalate.py names the record by its resolved path (/var is /private/var on macOS).
+    record_path = record_path.resolve()
+    run_id = json.loads(record_path.read_text())["run_id"]
+    reported = work / "reported.md"
+
+    # {prompt} carries the record's path; the stand-in diagnosis echoes it back.
+    os.environ["DIAGNOSE_COMMAND"] = "/bin/echo {prompt}"
+    os.environ["REPORT_COMMAND"] = f"/bin/cp {{message}} {reported}"
+    assert escalate.main(["escalate.py", str(record_path)]) == 0
+    diagnosis = (record_path.parent / f"{run_id}.diagnosis.md").read_text()
+    assert "read-only diagnostician" in diagnosis and str(record_path) in diagnosis, diagnosis
+    message = reported.read_text()
+    assert message.startswith("Sweep run failed: partition 100|10000,"), message
+    assert f"Record: {record_path}" in message and "Nothing was rerun" in message, message
+    outcome = json.loads(record_path.read_text())["escalation"]
+    assert (outcome["diagnose"], outcome["report"]) == ("exit 0", "exit 0"), outcome
+
+    # A diagnosis that runs too long is cut off; the report still goes out.
+    (record_path.parent / f"{run_id}.diagnosis.md").unlink()
+    reported.unlink()
+    os.environ["DIAGNOSE_COMMAND"] = "/bin/sleep 5"
+    os.environ["DIAGNOSE_TIMEOUT"] = "1"
+    escalate.main(["escalate.py", str(record_path)])
+    assert json.loads(record_path.read_text())["escalation"]["diagnose"] == "timed out"
+    assert "Diagnosis timed out after 1 s." in reported.read_text()
+
+    # Neither configured: no diagnosis, no report.
+    for key in ("DIAGNOSE_COMMAND", "REPORT_COMMAND", "DIAGNOSE_TIMEOUT"):
+        os.environ.pop(key, None)
+    escalate.main(["escalate.py", str(record_path)])
+    outcome = json.loads(record_path.read_text())["escalation"]
+    assert (outcome["diagnose"], outcome["report"]) == ("not configured", "not configured"), outcome
 
 
 def main() -> None:
@@ -32,7 +70,7 @@ def main() -> None:
 
     work = Path(tempfile.mkdtemp(prefix="just-dag-it-"))
     try:
-        for name in ("definitions.py", "fake_experiment.py"):
+        for name in ("definitions.py", "fake_experiment.py", "escalate.py"):
             shutil.copy(TEMPLATE / name, work / name)
         t = load(work)
         dg.Definitions.validate_loadable(t.defs)
@@ -69,6 +107,7 @@ def main() -> None:
         assert [Path(p).name for p in record["logs"]] == ["stdout.log", "stderr.log"], record
         assert "out of memory" in record["stderr_tail"], record
         assert "start size=10000 k=100" in (work / "results" / "k=100__size=10000" / "stdout.log").read_text()
+        check_escalate(work, work / "escalations" / f"{failed.run_id}.json")
 
         # An exception in the asset itself (no result.json) is not retried either.
         (work / "noresult-1000-100").write_text("")
@@ -90,7 +129,7 @@ def main() -> None:
 
         print(
             "template: transient error retried once; other failure and an unexpected exception not retried; "
-            "escalation record with folder and logs; 4 combinations; summary check passed"
+            "escalation record with folder and logs; diagnosis and report handed on; 4 combinations; summary check passed"
         )
     finally:
         shutil.rmtree(work, ignore_errors=True)

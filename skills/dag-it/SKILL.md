@@ -52,7 +52,7 @@ Confirm the parameter space and the acceptance checks with the person (AskUserQu
 
 ## 3. Build
 
-Copy `references/template/` (`definitions.py`, `dagster.yaml`) into the project and replace its parts marked REPLACE. Wrap the existing command; do not rewrite its logic inside the DAG. `references/dagster.md` has the setup, the mapping from each need to Dagster, and the traps that were hit when this template was tested.
+Copy `references/template/` (`definitions.py`, `escalate.py`, `dagster.yaml`) into the project and replace its parts marked REPLACE. Wrap the existing command; do not rewrite its logic inside the DAG. `references/dagster.md` has the setup, the mapping from each need to Dagster, and the traps that were hit when this template was tested.
 
 For anything in Dagster beyond the template (other partition types, automation conditions, sensors, schedules, integrations such as SSH or Docker, the `dg` CLI, components), read `references/dagster-expert/INDEX.md` and the reference it points to before writing code; do not write Dagster APIs from memory. It is the official Dagster skill, copied in (see its `UPSTREAM.md`). Where it and `references/dagster.md` differ, `dagster.md` records what this template was tested with.
 
@@ -62,7 +62,7 @@ Keep these properties:
 - Retries only for errors listed as transient: raise `RetryRequested` when stderr matches the list, and put no `RetryPolicy` on the asset, which would retry every exception, bugs in the asset included.
 - Command output written to files while it runs, so a run stopped by its cap still leaves its logs.
 - A runtime cap on every run, and run concurrency matching the resource (one GPU, one run).
-- The failure sensor writes an escalation record naming the combination's folder and logs; starting an agent from it is opt-in.
+- The failure sensor writes an escalation record naming the combination's folder and logs. Beyond the record, two opt-in steps: a one-shot diagnosis by a headless session with read-only tools and without the person's global instructions, then a report to the owner session, which decides. No agent that is called automatically may rerun or change anything.
 - Cleanup of paid resources in a sensor, never as a downstream step: a downstream step does not run after a failure. It releases once per idle stretch, failures left or not.
 - `DAGSTER_HOME` set to a persistent folder; without it every record of what finished is lost when the process stops.
 - The same environment variables for `dagster dev` and every CLI command: a run's tags, its runtime cap among them, come from the process that creates it.
@@ -71,7 +71,7 @@ Keep these properties:
 
 1. `dagster definitions validate -f definitions.py`
 2. One combination succeeds end to end.
-3. A forced transient error is retried and succeeds; a forced real error is not retried and writes an escalation record.
+3. A forced transient error is retried and succeeds; a forced real error is not retried and writes an escalation record, and, when configured, a diagnosis and a message that reaches the owner.
 4. A run past its cap is stopped, with no retry, and its record points at its logs.
 5. After every combination exists, the summary and its checks run by themselves.
 
@@ -84,7 +84,9 @@ Report each with its evidence (run ids, the record path). Starting the full swee
 - Progress, retries and limits are the engine's. Do not poll runs in a loop or re-report progress the UI already shows.
 - When resuming, reconnect to the existing runs or backfill. A combination that finished stays finished; one that failed is summarized from its record, and rerun only after its cause is handled.
 - Never start new runs, a new backfill, or a schedule the person did not approve.
-- When called with an escalation record: read it and the logs it points to, find the cause, and either fix it and rerun only the failed combinations, or, if the fix needs a decision (more budget, a changed parameter space), stop and ask. Record what happened where the project keeps its state (PHASE.md and an episode log, when the project has them).
+- Started as the one-shot diagnosis (`DIAGNOSE_COMMAND`): answer in the fixed form the prompt gives, from the record and its logs only. Rerun, edit and ask nothing; nobody is there to answer.
+- As the owner, on a report: read the message, the record and the diagnosis, and check the diagnosis against the logs before acting on it. Either fix the cause and rerun only the failed combination, or, if the fix needs a decision (more budget, a changed parameter space), stop and ask the person. Close the report with its outcome, and record what happened where the project keeps its state (PHASE.md and an episode log, when the project has them).
+- Choose the owner when the sweep is set up: the session that designed it, named in PHASE.md. With no owner, the record, the diagnosis and the message wait in `escalations/` for the person.
 - When the same failure is escalated twice, make it a rule: add its stderr text to the transient list if it is harmless, or a check that fails earlier and clearer if it is not.
 
 ## Done when
